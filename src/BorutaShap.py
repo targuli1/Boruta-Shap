@@ -1,25 +1,17 @@
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, IsolationForest
 from sklearn.datasets import load_breast_cancer, load_diabetes
-from statsmodels.stats.multitest import multipletests
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.cluster import KMeans
 from sklearn.inspection import permutation_importance
-from scipy.sparse import issparse
-from scipy.stats import binom_test, ks_2samp
+from scipy.stats import binomtest, ks_2samp
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
-import random
+import inspect
+from collections import defaultdict
 import pandas as pd
 import numpy as np
 from numpy.random import choice
 import seaborn as sns
 import shap
-import os
-import re
-
-import warnings
-warnings.filterwarnings("ignore")
 
 
 class BorutaShap:
@@ -29,7 +21,7 @@ class BorutaShap:
 
     """
 
-    def __init__(self, model=None, importance_measure='Shap',
+    def __init__(self, model=None, importance_measure='shap',
                 classification=True, percentile=100, pvalue=0.05):
 
         """
@@ -56,7 +48,9 @@ class BorutaShap:
 
         """
 
-        self.importance_measure = importance_measure
+        self.importance_measure = str(importance_measure).lower()
+        if self.importance_measure not in {'shap', 'perm', 'gini'}:
+            raise ValueError("importance_measure must be one of 'shap', 'perm', or 'gini'")
         self.percentile = percentile
         self.pvalue = pvalue
         self.classification = classification
@@ -155,7 +149,7 @@ class BorutaShap:
         for key, sub_params in nested_params.items():
             valid_params[key].set_params(**sub_params)
 
-        return 
+        return self
 
 
     def check_model(self):
@@ -475,9 +469,17 @@ class BorutaShap:
         self.store_feature_importance()
         self.calculate_rejected_accepted_tentative(verbose=verbose)
 
-    def transform(self, X):
-        return self.Subset(self)
-        
+    def transform(self, X, tentative=False):
+        """Subset a new dataframe to the fitted accepted features."""
+        if not hasattr(self, 'accepted'):
+            raise AttributeError('BorutaShap must be fitted before calling transform')
+
+        columns = list(self.accepted)
+        if tentative:
+            columns += list(self.tentative)
+
+        return X[columns]
+
     def calculate_rejected_accepted_tentative(self, verbose):
 
         """
@@ -527,8 +529,8 @@ class BorutaShap:
 
         """
 
-        padded_history_shadow  = np.full((self.ncols), np.NaN)
-        padded_history_x = np.full((self.ncols), np.NaN)
+        padded_history_shadow  = np.full((self.ncols), np.nan)
+        padded_history_x = np.full((self.ncols), np.nan)
 
         for (index, col) in enumerate(self.columns):
             map_index = self.order[col]
@@ -655,7 +657,7 @@ class BorutaShap:
             Datframe with random permutations of the original columns.
         """
         self.X_shadow = self.X.apply(np.random.permutation)
-        
+
         if isinstance(self.X_shadow, pd.DataFrame):
             # append
             obj_col = self.X_shadow.select_dtypes("object").columns.tolist()
@@ -685,6 +687,8 @@ class BorutaShap:
         """
         mean_value = np.mean(array)
         std_value  = np.std(array)
+        if std_value == 0:
+            return np.zeros(len(array))
         return [(element-mean_value)/std_value for element in array]
 
 
@@ -720,12 +724,18 @@ class BorutaShap:
 
             X_feature_import = vals[:len(self.X.columns)]
             Shadow_feature_import = vals[len(self.X_shadow.columns):]
-            
+
         elif self.importance_measure == 'perm':
-            
+
             # set default scoring as f1, can be changed to an argument for customizability
-            perm_importances_ =  permutation_importance(self.model, self.X, self.y, scoring='f1')
-            perm_importances_ = perm_importance.importances_mean
+            perm_importances_ = permutation_importance(
+                self.model,
+                self.X_boruta,
+                self.y,
+                scoring=None,
+                random_state=self.random_state,
+            )
+            perm_importances_ = perm_importances_.importances_mean
 
             if normalize:
                 perm_importances_ = self.calculate_Zscore(perm_importances_)
@@ -770,8 +780,9 @@ class BorutaShap:
         '''
         splits dataframe into 5% intervals
         '''
-        five_percent = self.get_5_percent(length)
-        return np.arange(five_percent,length,five_percent)
+        five_percent = max(1, self.get_5_percent(length))
+        splits = np.arange(five_percent, length, five_percent, dtype=int)
+        return splits[splits > 0]
 
 
 
@@ -780,27 +791,43 @@ class BorutaShap:
         Finds a sample by comparing the distributions of the anomally scores between the sample and the original
         distribution using the KS-test. Starts of a 5% howver will increase to 10% and then 15% etc. if a significant sample can not be found
         '''
-        loop = True
-        iteration = 0
-        size = self.get_5_percent_splits(self.X.shape[0])
-        element = 1
-        while loop:
+        sample_sizes = self.get_5_percent_splits(self.X.shape[0])
+        if sample_sizes.size == 0:
+            return self.X_boruta
 
-            sample_indices = choice(np.arange(self.preds.size),  size=size[element], replace=False)
-            sample = np.take(self.preds, sample_indices)
-            if ks_2samp(self.preds, sample).pvalue > 0.95:
-                break
-            
-            iteration+=1
+        population_indices = np.arange(self.preds.size)
 
-            if iteration == 20:
-                element  += 1
-                iteration = 0
+        for sample_size in sample_sizes:
+            sample_size = min(int(sample_size), self.preds.size)
+            for _ in range(20):
+                sample_indices = choice(population_indices, size=sample_size, replace=False)
+                sample = np.take(self.preds, sample_indices)
+                if ks_2samp(self.preds, sample).pvalue > 0.95:
+                    return self.X_boruta.iloc[sample_indices]
 
-
-        return self.X_boruta.iloc[sample_indices]
+        return self.X_boruta
 
 
+
+
+    @staticmethod
+    def _aggregate_shap_values(shap_values):
+        """Convert SHAP outputs across versions into mean absolute feature importances."""
+        if isinstance(shap_values, list):
+            return np.mean([np.abs(values).mean(axis=0) for values in shap_values], axis=0)
+
+        shap_values = np.asarray(shap_values)
+
+        if shap_values.ndim == 2:
+            return np.abs(shap_values).mean(axis=0)
+
+        if shap_values.ndim == 3:
+            # SHAP versions differ on whether class/output is axis 0 or axis 2.
+            if shap_values.shape[1] == 2 * shap_values.shape[2]:
+                return np.abs(shap_values).mean(axis=(0, 2))
+            return np.abs(shap_values).mean(axis=(0, 1))
+
+        raise ValueError(f"Unsupported SHAP values shape: {shap_values.shape}")
 
     def explain(self):
 
@@ -818,60 +845,12 @@ class BorutaShap:
         """
 
 
-        explainer = shap.TreeExplainer(self.model, 
+        explainer = shap.TreeExplainer(self.model,
                                        feature_perturbation = "tree_path_dependent",
                                        approximate = True)
 
-
-        if self.sample:
-
-
-            if self.classification:
-                # for some reason shap returns values wraped in a list of length 1
-
-                self.shap_values = np.array(explainer.shap_values(self.find_sample()))
-                if isinstance(self.shap_values, list):
-
-                    class_inds = range(len(self.shap_values))
-                    shap_imp = np.zeros(self.shap_values[0].shape[1])
-                    for i, ind in enumerate(class_inds):
-                        shap_imp += np.abs(self.shap_values[ind]).mean(0)
-                    self.shap_values /= len(self.shap_values)
-
-                elif len(self.shap_values.shape) == 3:
-                    self.shap_values = np.abs(self.shap_values).sum(axis=0)
-                    self.shap_values = self.shap_values.mean(0)
-
-                else:
-                    self.shap_values = np.abs(self.shap_values).mean(0)
-
-            else:
-                self.shap_values = explainer.shap_values(self.find_sample())
-                self.shap_values = np.abs(self.shap_values).mean(0)
-
-        else:
-
-            if self.classification:
-                # for some reason shap returns values wraped in a list of length 1
-                self.shap_values = np.array(explainer.shap_values(self.X_boruta))
-                if isinstance(self.shap_values, list):
-
-                    class_inds = range(len(self.shap_values))
-                    shap_imp = np.zeros(self.shap_values[0].shape[1])
-                    for i, ind in enumerate(class_inds):
-                        shap_imp += np.abs(self.shap_values[ind]).mean(0)
-                    self.shap_values /= len(self.shap_values)
-
-                elif len(self.shap_values.shape) == 3:
-                    self.shap_values = np.abs(self.shap_values).sum(axis=0)
-                    self.shap_values = self.shap_values.mean(0)
-
-                else:
-                    self.shap_values = np.abs(self.shap_values).mean(0)
-
-            else:
-                self.shap_values = explainer.shap_values(self.X_boruta)
-                self.shap_values = np.abs(self.shap_values).mean(0)
+        data = self.find_sample() if self.sample else self.X_boruta
+        self.shap_values = self._aggregate_shap_values(explainer.shap_values(data))
 
 
 
@@ -882,7 +861,7 @@ class BorutaShap:
         This is an exact, two-sided test of the null hypothesis
         that the probability of success in a Bernoulli experiment is p
         """
-        return [binom_test(x, n=n, p=p, alternative=alternative) for x in array]
+        return [binomtest(int(x), n=n, p=p, alternative=alternative).pvalue for x in array]
 
 
     @staticmethod
@@ -1072,7 +1051,7 @@ class BorutaShap:
 
         """
         # data from wide to long
-        data = self.history_x.iloc[1:]
+        data = self.history_x.iloc[1:].copy()
         data['index'] = data.index
         data = pd.melt(data, id_vars='index', var_name='Methods')
 

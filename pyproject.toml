@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "BorutaShap"
+version = "1.0.14"
+description = "A feature selection algorithm."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [
+    { name = "Eoghan Keany", email = "egnkeany@gmail.com" },
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "matplotlib>=3.8",
+    "numpy>=1.26",
+    "pandas>=2.1",
+    "scikit-learn>=1.4",
+    "scipy>=1.11",
+    "seaborn>=0.13",
+    "shap>=0.45",
+    "statsmodels>=0.14",
+    "tqdm>=4.66",
+]
+
+[project.urls]
+Homepage = "https://github.com/Ekeany/Boruta-Shap"
+
+[tool.setuptools]
+py-modules = ["BorutaShap"]
+package-dir = { "" = "src" }
