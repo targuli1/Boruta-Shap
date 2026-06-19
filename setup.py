@@ -18,12 +18,12 @@ setup(
     classifiers=[
         "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.12",
     ],
     py_modules = ["BorutaShap"],
     package_dir = {"" : "src"},
-    install_requires=["scikit-learn","tqdm",
-                      "statsmodels","matplotlib",
-                      "pandas","numpy","shap>=0.34.0","seaborn",
-                      "scipy"],
+    install_requires=["scikit-learn>=1.4","tqdm>=4.66",
+                      "statsmodels>=0.14","matplotlib>=3.8",
+                      "pandas>=2.1","numpy>=1.26","shap>=0.45","seaborn>=0.13",
+                      "scipy>=1.11"],
 )
